@@ -1,0 +1,621 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+local Lighting = game:GetService("Lighting")
+local ContentProvider = game:GetService("ContentProvider")
+
+-- Move System Module
+local MoveSystem = {}
+MoveSystem.__index = MoveSystem
+
+-- Animation IDs
+local ANIMATION_IDS = {
+    DROPKICK_HIT = "rbxassetid://109968629186691",
+    DROPKICK_MISS = "rbxassetid://107333576204562",
+    KJ_TAUNT = "rbxassetid://129225170899725",
+    KJ_TAUNT_2 = "rbxassetid://139302979952874"
+}
+
+-- Preload assets
+local function preloadAssets()
+    local assets = {
+        "rbxassetid://109968629186691",
+        "rbxassetid://107333576204562",
+        "rbxassetid://129225170899725",
+        "rbxassetid://139302979952874",
+        "rbxassetid://9756367194", -- Lightning effect
+        "rbxassetid://9756367194", -- Sparkle effect
+        "rbxassetid://9756367194", -- Energy effect,
+    }
+    ContentProvider:PreloadAsync(assets)
+end
+
+function MoveSystem.new(player)
+    local self = setmetatable({}, MoveSystem)
+    self.Player = player
+    self.Moves = {}
+    self.Cooldowns = {}
+    self.Animations = {}
+    self.AnimationTracks = {}
+    self.IsMobile = UserInputService.TouchEnabled
+    self.CutsceneActive = false
+    
+    -- Preload assets
+    spawn(preloadAssets)
+    
+    -- Setup GUI
+    self:SetupGUI()
+    
+    -- Load animations
+    self:LoadAnimations()
+    
+    return self
+end
+
+function MoveSystem:SetupGUI()
+    local playerGui = self.Player:WaitForChild("PlayerGui")
+    
+    -- Create main screen GUI
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "MoveSystemGUI"
+    screenGui.Parent = playerGui
+    
+    -- Create move buttons container
+    local buttonContainer = Instance.new("Frame")
+    buttonContainer.Name = "ButtonContainer"
+    buttonContainer.Size = UDim2.new(1, 0, 0, 60)
+    buttonContainer.Position = UDim2.new(0, 0, 1, -60)
+    buttonContainer.BackgroundTransparency = 1
+    buttonContainer.Parent = screenGui
+    
+    local uiListLayout = Instance.new("UIListLayout")
+    uiListLayout.FillDirection = Enum.FillDirection.Horizontal
+    uiListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    uiListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    uiListLayout.Padding = UDim.new(0, 10)
+    uiListLayout.Parent = buttonContainer
+    
+    -- Cutscene black bars
+    local topBar = Instance.new("Frame")
+    topBar.Name = "TopBar"
+    topBar.Size = UDim2.new(1, 0, 0, 0)
+    topBar.Position = UDim2.new(0, 0, 0, 0)
+    topBar.BackgroundColor3 = Color3.new(0, 0, 0)
+    topBar.BorderSizePixel = 0
+    topBar.ZIndex = 10
+    topBar.Visible = false
+    topBar.Parent = screenGui
+    
+    local bottomBar = Instance.new("Frame")
+    bottomBar.Name = "BottomBar"
+    bottomBar.Size = UDim2.new(1, 0, 0, 0)
+    bottomBar.Position = UDim2.new(0, 0, 1, 0)
+    bottomBar.BackgroundColor3 = Color3.new(0, 0, 0)
+    bottomBar.BorderSizePixel = 0
+    bottomBar.ZIndex = 10
+    bottomBar.Visible = false
+    bottomBar.Parent = screenGui
+    
+    self.ScreenGui = screenGui
+    self.ButtonContainer = buttonContainer
+    self.TopBar = topBar
+    self.BottomBar = bottomBar
+end
+
+function MoveSystem:LoadAnimations()
+    local humanoid = self.Player.Character and self.Player.Character:FindFirstChild("Humanoid")
+    if not humanoid then
+        self.Player.CharacterAdded:Connect(function()
+            self:LoadAnimations()
+        end)
+        return
+    end
+    
+    local animator = humanoid:FindFirstChild("Animator") or Instance.new("Animator", humanoid)
+    
+    -- Create animations
+    for name, id in pairs(ANIMATION_IDS) do
+        local animation = Instance.new("Animation")
+        animation.AnimationId = id
+        self.Animations[name] = animation
+        self.AnimationTracks[name] = animator:LoadAnimation(animation)
+    end
+end
+
+function MoveSystem:Create(moveId, callback, cooldown, moveName, keybind)
+    local moveButton = Instance.new("TextButton")
+    moveButton.Name = "Move" .. moveId
+    moveButton.Size = UDim2.new(0, 100, 0, 50)
+    moveButton.BackgroundColor3 = Color3.fromRGB(85, 170, 255)
+    moveButton.Text = moveName .. "\n(" .. keybind .. ")"
+    moveButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    moveButton.Font = Enum.Font.SciFi
+    moveButton.TextSize = 14
+    moveButton.TextWrapped = true
+    moveButton.Parent = self.ButtonContainer
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = moveButton
+    
+    local cooldownFrame = Instance.new("Frame")
+    cooldownFrame.Name = "Cooldown"
+    cooldownFrame.Size = UDim2.new(1, 0, 1, 0)
+    cooldownFrame.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    cooldownFrame.BackgroundTransparency = 0.7
+    cooldownFrame.Visible = false
+    cooldownFrame.ZIndex = 2
+    cooldownFrame.Parent = moveButton
+    
+    local corner2 = Instance.new("UICorner")
+    corner2.CornerRadius = UDim.new(0, 8)
+    corner2.Parent = cooldownFrame
+    
+    self.Moves[moveId] = {
+        Callback = callback,
+        Cooldown = cooldown,
+        Name = moveName,
+        Keybind = keybind,
+        Button = moveButton,
+        CooldownFrame = cooldownFrame,
+        LastUsed = 0
+    }
+    
+    -- Connect button click
+    moveButton.MouseButton1Click:Connect(function()
+        self:UseMove(moveId)
+    end)
+end
+
+function MoveSystem:UseMove(moveId)
+    if self.CutsceneActive then return false end
+    
+    local move = self.Moves[moveId]
+    if not move then return false end
+    
+    local currentTime = tick()
+    if currentTime - move.LastUsed < move.Cooldown then
+        -- Still on cooldown
+        return false
+    end
+    
+    move.LastUsed = currentTime
+    move.Callback(self.Player) -- Execute the move's functionality
+    
+    -- Visual feedback for button press
+    move.Button.BackgroundColor3 = Color3.fromRGB(65, 150, 235)
+    delay(0.1, function()
+        if move.Button then
+            move.Button.BackgroundColor3 = Color3.fromRGB(85, 170, 255)
+        end
+    end)
+    
+    -- Start cooldown animation
+    move.CooldownFrame.Visible = true
+    move.CooldownFrame.Size = UDim2.new(1, 0, 1, 0)
+    
+    local tweenInfo = TweenInfo.new(
+        move.Cooldown,
+        Enum.EasingStyle.Linear,
+        Enum.EasingDirection.Out
+    )
+    
+    local tween = TweenService:Create(move.CooldownFrame, tweenInfo, {Size = UDim2.new(0, 0, 1, 0)})
+    tween:Play()
+    
+    tween.Completed:Connect(function()
+        if move.CooldownFrame then
+            move.CooldownFrame.Visible = false
+        end
+    end)
+    
+    return true
+end
+
+function MoveSystem:BindKey(moveId, keyCode)
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        
+        if input.KeyCode == keyCode then
+            self:UseMove(moveId)
+        end
+    end)
+end
+
+function MoveSystem:StartCutscene()
+    self.CutsceneActive = true
+    
+    -- Show black bars
+    self.TopBar.Visible = true
+    self.BottomBar.Visible = true
+    
+    -- Animate bars in
+    local tweenInfo = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local topTween = TweenService:Create(self.TopBar, tweenInfo, {Size = UDim2.new(1, 0, 0.1, 0)})
+    local bottomTween = TweenService:Create(self.BottomBar, tweenInfo, {Size = UDim2.new(1, 0, 0.1, 0), Position = UDim2.new(0, 0, 0.9, 0)})
+    
+    topTween:Play()
+    bottomTween:Play()
+    
+    -- Hide UI elements
+    self.ButtonContainer.Visible = false
+    
+    return topTween, bottomTween
+end
+
+function MoveSystem:EndCutscene()
+    -- Animate bars out
+    local tweenInfo = TweenInfo.new(1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local topTween = TweenService:Create(self.TopBar, tweenInfo, {Size = UDim2.new(1, 0, 0, 0)})
+    local bottomTween = TweenService:Create(self.BottomBar, tweenInfo, {Size = UDim2.new(1, 0, 0, 0), Position = UDim2.new(0, 0, 1, 0)})
+    
+    topTween:Play()
+    bottomTween:Play()
+    
+    topTween.Completed:Connect(function()
+        self.TopBar.Visible = false
+        self.BottomBar.Visible = false
+        self.ButtonContainer.Visible = true
+        self.CutsceneActive = false
+    end)
+end
+
+-- Special effects functions
+function createLightningEffect(position, color)
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(0.5, 10, 0.5)
+    part.Position = position
+    part.Anchored = true
+    part.CanCollide = false
+    part.Material = Enum.Material.Neon
+    part.BrickColor = BrickColor.new(color)
+    part.Parent = workspace
+    
+    local glow = Instance.new("SurfaceLight")
+    glow.Color = part.Color
+    glow.Brightness = 5
+    glow.Range = 10
+    glow.Parent = part
+    
+    return part
+end
+
+function createEnergySphere(position, size, color)
+    local part = Instance.new("Part")
+    part.Shape = Enum.PartType.Ball
+    part.Size = Vector3.new(size, size, size)
+    part.Position = position
+    part.Anchored = true
+    part.CanCollide = false
+    part.Material = Enum.Material.Neon
+    part.BrickColor = BrickColor.new(color)
+    part.Parent = workspace
+    
+    local particle = Instance.new("ParticleEmitter")
+    particle.Color = ColorSequence.new(part.Color)
+    particle.Size = NumberSequence.new(2)
+    particle.Lifetime = NumberRange.new(1)
+    particle.Rate = 50
+    particle.Speed = NumberRange.new(5)
+    particle.Parent = part
+    
+    return part
+end
+
+function createShockwave(position, maxSize, color)
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(1, 1, 1)
+    part.Position = position
+    part.Anchored = true
+    part.CanCollide = false
+    part.Material = Enum.Material.Neon
+    part.BrickColor = BrickColor.new(color)
+    part.Shape = Enum.PartType.Cylinder
+    part.Parent = workspace
+    
+    local tween = TweenService:Create(part, TweenInfo.new(1), {
+        Size = Vector3.new(maxSize, 0.1, maxSize),
+        Transparency = 1
+    })
+    tween:Play()
+    
+    tween.Completed:Connect(function()
+        part:Destroy()
+    end)
+    
+    return part
+end
+
+-- New effect functions for Unlimited Flex Works
+function createImpactFrame(position, size, duration)
+    local part = Instance.new("Part")
+    part.Size = Vector3.new(size, size, 0.1)
+    part.Position = position
+    part.Anchored = true
+    part.CanCollide = false
+    part.Material = Enum.Material.Neon
+    part.BrickColor = BrickColor.new("Bright yellow")
+    part.Transparency = 0.5
+    part.Parent = workspace
+    
+    local light = Instance.new("SurfaceLight")
+    light.Brightness = 10
+    light.Range = size
+    light.Color = Color3.new(1, 1, 0.5)
+    light.Parent = part
+    
+    local tween = TweenService:Create(part, TweenInfo.new(duration), {
+        Transparency = 1,
+        Size = Vector3.new(size * 1.5, size * 1.5, 0.1)
+    })
+    tween:Play()
+    
+    tween.Completed:Connect(function()
+        part:Destroy()
+    end)
+    
+    return part
+end
+
+function createRockParticles(position, count, size)
+    for i = 1, count do
+        spawn(function()
+            local rock = Instance.new("Part")
+            rock.Size = Vector3.new(size, size, size)
+            rock.Position = position
+            rock.Anchored = false
+            rock.CanCollide = true
+            rock.Material = Enum.Material.Concrete
+            rock.BrickColor = BrickColor.new("Medium stone grey")
+            rock.Parent = workspace
+            
+            -- Apply random force
+            local bodyVelocity = Instance.new("BodyVelocity")
+            bodyVelocity.Velocity = Vector3.new(
+                math.random(-20, 20),
+                math.random(10, 30),
+                math.random(-20, 20)
+            )
+            bodyVelocity.P = 1000
+            bodyVelocity.MaxForce = Vector3.new(2000, 2000, 2000)
+            bodyVelocity.Parent = rock
+            
+            -- Add spin
+            local bodyAngularVelocity = Instance.new("BodyAngularVelocity")
+            bodyAngularVelocity.AngularVelocity = Vector3.new(
+                math.random(-10, 10),
+                math.random(-10, 10),
+                math.random(-10, 10)
+            )
+            bodyAngularVelocity.P = 1000
+            bodyAngularVelocity.MaxTorque = Vector3.new(2000, 2000, 2000)
+            bodyAngularVelocity.Parent = rock
+            
+            -- Fade out and destroy
+            wait(1)
+            local tween = TweenService:Create(rock, TweenInfo.new(2), {
+                Transparency = 1
+            })
+            tween:Play()
+            
+            tween.Completed:Connect(function()
+                rock:Destroy()
+            end)
+        end)
+    end
+end
+
+function createScreenShake(intensity, duration, player)
+    local camera = workspace.CurrentCamera
+    local originalPosition = camera.CFrame
+    
+    local startTime = tick()
+    while tick() - startTime < duration do
+        local offset = Vector3.new(
+            math.random(-intensity, intensity),
+            math.random(-intensity, intensity),
+            math.random(-intensity, intensity)
+        ) / 10
+        
+        camera.CFrame = originalPosition * CFrame.new(offset)
+        RunService.RenderStepped:Wait()
+    end
+    
+    camera.CFrame = originalPosition
+end
+
+-- Initialize the move system for the local player
+local player = Players.LocalPlayer
+local ms = MoveSystem.new(player)
+
+-- Define the moves with animations and effects
+ms:Create("1", function(player)
+    local character = player.Character
+    if not character then return end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return end
+    
+    -- Play dropkick animation
+    local track = ms.AnimationTracks.DROPKICK_HIT
+    if track then
+        track:Play()
+        
+        -- Create energy trail effect
+        local root = character.HumanoidRootPart
+        for i = 1, 5 do
+            local trail = createEnergySphere(root.Position, 2, "Bright blue")
+            local tween = TweenService:Create(trail, TweenInfo.new(0.5), {
+                Size = Vector3.new(0.1, 0.1, 0.1),
+                Transparency = 1
+            })
+            tween:Play()
+            tween.Completed:Connect(function() trail:Destroy() end)
+            wait(0.1)
+        end
+        
+        -- Check if hit something (simplified)
+        wait(0.5) -- Wait for animation to connect
+        
+        -- Create impact effect
+        local hitPos = root.Position + root.CFrame.LookVector * 5
+        createShockwave(hitPos, 20, "Bright blue")
+        
+        -- Lightning effect
+        for i = 1, 3 do
+            local lightning = createLightningEffect(hitPos + Vector3.new(math.random(-5, 5), 10, math.random(-5, 5)), "Bright blue")
+            local tween = TweenService:Create(lightning, TweenInfo.new(0.3), {Transparency = 1})
+            tween:Play()
+            tween.Completed:Connect(function() lightning:Destroy() end)
+        end
+    end
+end, 5, "20-20-20 Dropkick", "Q")
+
+ms:Create("2", function(player)
+    local character = player.Character
+    if not character then return end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return end
+    
+    -- Play KJ taunt animation
+    local track = ms.AnimationTracks.KJ_TAUNT
+    if track then
+        track:Play()
+        
+        -- Stop character movement during taunt
+        humanoid.WalkSpeed = 0
+        
+        -- Create special effect
+        local root = character.HumanoidRootPart
+        
+        -- Create energy sphere
+        local aura = createEnergySphere(root.Position, 5, "Bright violet")
+        
+        -- Create floating orbs
+        for i = 1, 8 do
+            spawn(function()
+                local angle = (i / 8) * math.pi * 2
+                local orb = createEnergySphere(root.Position, 1, "Bright purple")
+                
+                local orbitTime = 2
+                local startTime = tick()
+                
+                while tick() - startTime < orbitTime do
+                    local progress = (tick() - startTime) / orbitTime
+                    local x = math.cos(angle + progress * math.pi * 2) * 4
+                    local z = math.sin(angle + progress * math.pi * 2) * 4
+                    orb.Position = root.Position + Vector3.new(x, 3, z)
+                    RunService.Heartbeat:Wait()
+                end
+                
+                local tween = TweenService:Create(orb, TweenInfo.new(0.5), {
+                    Size = Vector3.new(0.1, 0.1, 0.1),
+                    Transparency = 1
+                })
+                tween:Play()
+                tween.Completed:Connect(function() orb:Destroy() end)
+            end)
+        end
+        
+        -- Tween effect
+        local tween = TweenService:Create(aura, TweenInfo.new(2), {
+            Size = Vector3.new(15, 15, 15),
+            Transparency = 1
+        })
+        tween:Play()
+        
+        -- Reset movement after animation
+        track.Stopped:Connect(function()
+            humanoid.WalkSpeed = 16
+            aura:Destroy()
+        end)
+    end
+end, 15, "KJ ult", "E")
+
+ms:Create("3", function(player)
+    local character = player.Character
+    if not character then return end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return end
+    
+    -- Start cutscene
+    ms:StartCutscene()
+    
+    -- Change lighting for dramatic effect
+    local originalBrightness = Lighting.Brightness
+    local originalFog = Lighting.FogEnd
+    local originalColor = Lighting.Ambient
+    Lighting.Brightness = 2
+    Lighting.FogEnd = 50
+    Lighting.Ambient = Color3.new(1, 0.8, 0.2)
+    
+    -- Play unlimited flex works animation
+    local track = ms.AnimationTracks.KJ_TAUNT_2
+    if track then
+        track:Play()
+        
+        -- Stop character movement during taunt
+        humanoid.WalkSpeed = 0
+        
+        -- Create special effect
+        local root = character.HumanoidRootPart
+        
+        -- Create massive energy sphere
+        local megaSphere = createEnergySphere(root.Position, 10, "Bright yellow")
+        local light = Instance.new("PointLight")
+        light.Brightness = 10
+        light.Range = 50
+        light.Color = Color3.new(1, 1, 0.5)
+        light.Parent = megaSphere
+        
+        -- Create multiple shockwaves
+        for i = 1, 5 do
+            createShockwave(root.Position, 50, "Bright yellow")
+            wait(0.3)
+        end
+        
+        -- Create lightning storm
+        for i = 1, 20 do
+            spawn(function()
+                local lightning = createLightningEffect(
+                    root.Position + Vector3.new(math.random(-20, 20), 20, math.random(-20, 20)),
+                    "Bright yellow"
+                )
+                lightning.Size = Vector3.new(0.3, math.random(10, 20), 0.3)
+                local tween = TweenService:Create(lightning, TweenInfo.new(0.5), {Transparency = 1})
+                tween:Play()
+                tween.Completed:Connect(function() lightning:Destroy() end)
+            end)
+            wait(0.1)
+        end
+        
+        -- Create floating text effect
+        local billboard = Instance.new("BillboardGui")
+        billboard.Size = UDim2.new(0, 10, 0, 3)
+        billboard.StudsOffset = Vector3.new(0, 5, 0)
+        billboard.Adornee = root
+        billboard.Parent = root
+        
+        local textLabel = Instance.new("TextLabel")
+        textLabel.Size = UDim2.new(1, 0, 1, 0)
+        textLabel.Text = "UNLIMITED FLEX WORKS!"
+        textLabel.TextColor3 = Color3.new(1, 1, 0)
+        textLabel.BackgroundTransparency = 1
+        textLabel.Font = Enum.Font.SciFi
+        textLabel.TextScaled = true
+        textLabel.Parent = billboard
+        
+        -- Create impact frames
+        for i = 1, 3 do
+            createImpactFrame(root.Position + Vector3.new(0, 5, 0), 15, 0.5)
+            wait(0.5)
+        end
+        
+        -- Create rock particles (big impact)
+        createRockParticles(root.Position, 30, 3)
+        
+    
